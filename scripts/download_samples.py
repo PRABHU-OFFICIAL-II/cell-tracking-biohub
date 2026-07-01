@@ -27,8 +27,12 @@ def get_token():
 
 
 def download_file(token, kaggle_path, out_dir, retries=3):
-    """Download one file: get 302 redirect from Kaggle, follow to GCS."""
-    dest = out_dir / kaggle_path
+    """Download one file: get 302 redirect from Kaggle, follow to GCS.
+    kaggle_path is like 'train/sample.zarr/0/c/5/0/0/0'.
+    We strip the leading 'train/' so files land at out_dir/sample.zarr/...
+    """
+    relative = kaggle_path.removeprefix("train/")
+    dest = out_dir / relative
     if dest.exists() and dest.stat().st_size > 0:
         return True  # already done
 
@@ -78,29 +82,36 @@ def zarr_paths(sample):
 
 
 def geff_paths(sample):
-    """All downloadable paths inside a .geff graph."""
+    """All downloadable paths inside a .geff graph.
+    Exact paths confirmed by scanning the Kaggle file listing.
+    Node/prop chunks use c/0 (single chunk, 1D array).
+    Edge chunk uses c/0/0 (2D array).
+    """
     return [
+        # Group metadata
         f"train/{sample}.geff/zarr.json",
-        f"train/{sample}.geff/nodes/ids/c/0/0",
-        f"train/{sample}.geff/nodes/props/t/values/c/0/0",
-        f"train/{sample}.geff/nodes/props/z/values/c/0/0",
-        f"train/{sample}.geff/nodes/props/y/values/c/0/0",
-        f"train/{sample}.geff/nodes/props/x/values/c/0/0",
-        f"train/{sample}.geff/edges/ids/c/0/0",
-        # zarr.json metadata for each array
-        f"train/{sample}.geff/nodes/ids/zarr.json",
-        f"train/{sample}.geff/nodes/props/t/values/zarr.json",
-        f"train/{sample}.geff/nodes/props/z/values/zarr.json",
-        f"train/{sample}.geff/nodes/props/y/values/zarr.json",
-        f"train/{sample}.geff/nodes/props/x/values/zarr.json",
-        f"train/{sample}.geff/edges/ids/zarr.json",
         f"train/{sample}.geff/nodes/zarr.json",
-        f"train/{sample}.geff/edges/zarr.json",
         f"train/{sample}.geff/nodes/props/zarr.json",
         f"train/{sample}.geff/nodes/props/t/zarr.json",
-        f"train/{sample}.geff/nodes/props/z/zarr.json",
-        f"train/{sample}.geff/nodes/props/y/zarr.json",
         f"train/{sample}.geff/nodes/props/x/zarr.json",
+        f"train/{sample}.geff/nodes/props/y/zarr.json",
+        f"train/{sample}.geff/nodes/props/z/zarr.json",
+        f"train/{sample}.geff/edges/zarr.json",
+        f"train/{sample}.geff/edges/props/zarr.json",
+        # Array zarr.json metadata
+        f"train/{sample}.geff/nodes/ids/zarr.json",
+        f"train/{sample}.geff/nodes/props/t/values/zarr.json",
+        f"train/{sample}.geff/nodes/props/x/values/zarr.json",
+        f"train/{sample}.geff/nodes/props/y/values/zarr.json",
+        f"train/{sample}.geff/nodes/props/z/values/zarr.json",
+        f"train/{sample}.geff/edges/ids/zarr.json",
+        # Data chunks (c/0 for 1D, c/0/0 for 2D)
+        f"train/{sample}.geff/nodes/ids/c/0",
+        f"train/{sample}.geff/nodes/props/t/values/c/0",
+        f"train/{sample}.geff/nodes/props/x/values/c/0",
+        f"train/{sample}.geff/nodes/props/y/values/c/0",
+        f"train/{sample}.geff/nodes/props/z/values/c/0",
+        f"train/{sample}.geff/edges/ids/c/0/0",
     ]
 
 

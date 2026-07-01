@@ -48,18 +48,25 @@ def build_cost_matrix(
             if d <= max_dist:
                 cost[i, j] = d ** 2
 
-    # Augment with dummy rows/cols for birth/death events
+    # Standard TrackMate-style LAP augmentation:
+    # Top-left (N×M):     real linking costs
+    # Top-right (N×N):    diagonal — source termination (death)
+    # Bottom-left (M×M):  diagonal — target initiation (birth)
+    # Bottom-right (M×N): transpose of top-left with BIG→0
     aug = np.full((N + M, N + M), BIG)
-    aug[:N, :M] = cost
-    # Bottom-left: death of unlinked sources (diagonal)
+    aug[:N, :M] = cost                          # top-left: real costs
+
+    # Top-right (N×N diagonal): cost for source i to terminate
     for i in range(N):
-        aug[N + i, i] = np.min(cost[i]) if np.any(cost[i] < BIG) else BIG
-    # Top-right: birth of unlinked targets (diagonal)
+        aug[i, M + i] = np.min(cost[i]) if np.any(cost[i] < BIG) else BIG
+
+    # Bottom-left (M×M diagonal): cost for target j to be born
     for j in range(M):
-        aug[j, M + j] = np.min(cost[:, j]) if np.any(cost[:, j] < BIG) else BIG
-    # Bottom-right: mirror of top-left (transpose, required for LAP)
-    sub = aug[:N, :M].copy()
-    sub[sub == BIG] = 0
+        aug[N + j, j] = np.min(cost[:, j]) if np.any(cost[:, j] < BIG) else BIG
+
+    # Bottom-right (M×N): transpose of top-left, BIG replaced by 0
+    sub = cost.copy()
+    sub[sub >= BIG] = 0
     aug[N:, M:] = sub.T
 
     return aug, N, M

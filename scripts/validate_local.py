@@ -25,6 +25,17 @@ def main():
     data_dir = Path(args.data_dir)
     zarr_dirs = sorted(data_dir.glob('*.zarr'))[:args.max_samples]
 
+    # Load model once, reuse across all samples
+    model = None
+    if args.backend == 'stardist':
+        from src.segmentation.stardist_detector import load_stardist_model
+        print("Loading StarDist 3D model...")
+        model = load_stardist_model('3D_demo')
+    elif args.backend == 'cellpose':
+        from src.segmentation.cellpose_detector import load_cellpose_model
+        print("Loading Cellpose model...")
+        model = load_cellpose_model('cyto3')
+
     scores = []
     for zarr_path in zarr_dirs:
         sample_name = zarr_path.stem
@@ -35,7 +46,7 @@ def main():
 
         print(f'\n=== {sample_name} ===')
         try:
-            G_pred = run_pipeline(str(zarr_path), backend=args.backend)
+            G_pred = run_pipeline(str(zarr_path), backend=args.backend, model=model)
             G_gt = load_geff(str(geff_path))
             result = compute_combined_score(G_pred, G_gt)
             scores.append(result)

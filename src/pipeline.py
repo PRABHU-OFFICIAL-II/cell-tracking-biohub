@@ -81,6 +81,17 @@ def run_pipeline(
     """
     seg_kwargs = seg_kwargs or {}
 
+    # Auto-load model if not provided
+    if model is None:
+        if backend == "stardist":
+            from .segmentation.stardist_detector import load_stardist_model
+            print("Loading StarDist 3D model (3D_demo)...")
+            model = load_stardist_model("3D_demo")
+        elif backend == "cellpose":
+            from .segmentation.cellpose_detector import load_cellpose_model
+            print("Loading Cellpose model (cyto3)...")
+            model = load_cellpose_model("cyto3")
+
     volume = load_zarr_volume(zarr_path)
     print(f"Loaded {zarr_path}: shape={volume.shape}")
 

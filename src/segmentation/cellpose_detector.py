@@ -56,6 +56,7 @@ def detect_timepoint(
         do_3D=do_3D,
         anisotropy=anisotropy,
         channels=[0, 0],
+        z_axis=0,
     )
     # v3 returns (masks, flows, styles), v2 same — unpack safely
     masks = result[0] if isinstance(result, (list, tuple)) else result

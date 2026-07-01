@@ -11,9 +11,14 @@ from skimage import measure
 
 
 def load_cellpose_model(model_type: str = "cyto3", gpu: bool = True):
-    """Load Cellpose model."""
+    """Load Cellpose model. Works with cellpose v3+ (CellposeModel) and v2 (Cellpose)."""
     from cellpose import models
-    return models.Cellpose(model_type=model_type, gpu=gpu)
+    if hasattr(models, 'CellposeModel'):
+        # cellpose v3+
+        return models.CellposeModel(model_type=model_type, gpu=gpu)
+    else:
+        # cellpose v2
+        return models.Cellpose(model_type=model_type, gpu=gpu)
 
 
 def normalize_percentile(vol: np.ndarray, pmin: float = 1.0, pmax: float = 99.8) -> np.ndarray:
@@ -45,13 +50,15 @@ def detect_timepoint(
         centroids: (N, 3) int array [z, y, x]
     """
     vol_norm = normalize_percentile(vol)
-    masks, flows, styles = model.eval(
+    result = model.eval(
         vol_norm,
         diameter=diameter,
         do_3D=do_3D,
         anisotropy=anisotropy,
         channels=[0, 0],
     )
+    # v3 returns (masks, flows, styles), v2 same — unpack safely
+    masks = result[0] if isinstance(result, (list, tuple)) else result
     return masks_to_centroids(masks)
 
 

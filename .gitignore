@@ -1,6 +1,3 @@
-# Data — never commit (too large, download via scripts/download_samples.py)
-data/
-
 # Python
 __pycache__/
 *.py[cod]

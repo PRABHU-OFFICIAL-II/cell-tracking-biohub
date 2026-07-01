@@ -1,0 +1,25 @@
+# Default hyperparameters for the cell tracking pipeline
+# Tune these with Optuna on the training set
+
+segmentation:
+  backend: stardist          # blob | stardist | cellpose
+  stardist_model: 3D_demo
+  stardist_prob_thresh: 0.5
+  stardist_nms_thresh: 0.4
+  blob_min_sigma: 2.0
+  blob_max_sigma: 6.0
+  blob_threshold: 0.05
+  cellpose_diameter: 15.0
+  cellpose_anisotropy: 4.0   # z_scale / xy_scale = 1.625 / 0.40625
+
+tracking:
+  backend: lap               # lap | ultrack
+  max_link_dist_um: 7.0
+  max_gap_frames: 2
+
+division:
+  max_daughter_dist_um: 15.0
+  proximity_search_dist_um: 12.0
+
+evaluation:
+  max_match_dist_um: 7.0

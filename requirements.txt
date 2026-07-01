@@ -1,0 +1,28 @@
+zarr>=2.17
+numpy>=1.24
+scipy>=1.11
+scikit-image>=0.21
+pandas>=2.0
+networkx>=3.2
+tqdm>=4.66
+matplotlib>=3.7
+napari[all]>=0.4.19
+
+# Segmentation
+stardist>=0.8.5
+cellpose>=3.0
+
+# Tracking
+laptrack>=0.15
+ultrack>=0.6
+
+# ML
+torch>=2.1
+torchvision>=0.16
+
+# Tuning
+optuna>=3.4
+
+# Notebook
+jupyter>=1.0
+ipywidgets>=8.0

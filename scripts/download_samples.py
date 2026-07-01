@@ -1,8 +1,6 @@
 """
-Download a few train samples from Kaggle using Bearer token auth.
-Constructs file paths directly from zarr v3 spec instead of listing all files.
-zarr layout: <sample>.zarr/0/c/{t}/0/0/0 for T=0..99, plus zarr.json metadata
-geff layout:  <sample>.geff/zarr.json + nodes/ids + nodes/props/{t,z,y,x}/values + edges/ids
+Download train samples from Kaggle using Bearer token + GCS redirect.
+The API returns a 302 redirect to a signed GCS URL — follow it without auth headers.
 """
 
 import json
@@ -12,7 +10,7 @@ from pathlib import Path
 
 COMPETITION = "biohub-cell-tracking-during-development"
 KAGGLE_JSON = Path.home() / ".kaggle" / "kaggle.json"
-OUT_DIR = Path(__file__).parent.parent / "data" / "train"
+OUT_DIR = Path(__file__).parent.parent / "data" / "train" / "train"
 
 SAMPLES = [
     "44b6_0113de3b",
@@ -21,106 +19,123 @@ SAMPLES = [
 ]
 
 BASE = "https://www.kaggle.com/api/v1"
-N_TIMEPOINTS = 100  # T dimension per volume
+N_TIMEPOINTS = 100
 
 
 def get_token():
     return json.loads(KAGGLE_JSON.read_text())["key"]
 
 
-def zarr_files(sample):
-    """All file paths inside <sample>.zarr that we need."""
-    paths = [
-        f"train/{sample}.zarr/zarr.json",
-        f"train/{sample}.zarr/0/zarr.json",
-    ]
+def download_file(token, kaggle_path, out_dir, retries=3):
+    """Download one file: get 302 redirect from Kaggle, follow to GCS."""
+    dest = out_dir / kaggle_path
+    if dest.exists() and dest.stat().st_size > 0:
+        return True  # already done
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Slashes in path must be URL-encoded — plain slashes in URL segments return 404
+    encoded_path = kaggle_path.replace("/", "%2F")
+    url = f"{BASE}/competitions/data/download/{COMPETITION}/{encoded_path}"
+
+    for attempt in range(retries):
+        try:
+            # Step 1: get redirect (don't follow, GCS doesn't want Kaggle auth headers)
+            r1 = requests.get(url, headers={"Authorization": f"Bearer {token}"},
+                              timeout=30, allow_redirects=False)
+            if r1.status_code == 404:
+                return False  # file doesn't exist
+            if r1.status_code == 429:
+                time.sleep(15 * (attempt + 1))
+                continue
+            if r1.status_code not in (302, 301, 303, 307, 308, 200):
+                print(f"  Unexpected {r1.status_code} for {kaggle_path}")
+                return False
+
+            # Step 2: follow redirect to GCS (no auth header)
+            if r1.status_code == 200:
+                content = r1.content
+            else:
+                gcs_url = r1.headers["Location"]
+                r2 = requests.get(gcs_url, timeout=60, stream=True)
+                r2.raise_for_status()
+                content = r2.content
+
+            dest.write_bytes(content)
+            return True
+
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"  FAILED {kaggle_path}: {e}")
+    return False
+
+
+def zarr_paths(sample):
+    """All downloadable paths inside a .zarr volume."""
+    paths = [f"train/{sample}.zarr/0/zarr.json"]
     for t in range(N_TIMEPOINTS):
         paths.append(f"train/{sample}.zarr/0/c/{t}/0/0/0")
     return paths
 
 
-def geff_files(sample):
-    """All file paths inside <sample>.geff that we need."""
+def geff_paths(sample):
+    """All downloadable paths inside a .geff graph."""
     return [
         f"train/{sample}.geff/zarr.json",
-        f"train/{sample}.geff/nodes/ids",
+        f"train/{sample}.geff/nodes/ids/c/0/0",
+        f"train/{sample}.geff/nodes/props/t/values/c/0/0",
+        f"train/{sample}.geff/nodes/props/z/values/c/0/0",
+        f"train/{sample}.geff/nodes/props/y/values/c/0/0",
+        f"train/{sample}.geff/nodes/props/x/values/c/0/0",
+        f"train/{sample}.geff/edges/ids/c/0/0",
+        # zarr.json metadata for each array
         f"train/{sample}.geff/nodes/ids/zarr.json",
-        f"train/{sample}.geff/nodes/props/t/values",
-        f"train/{sample}.geff/nodes/props/t/zarr.json",
-        f"train/{sample}.geff/nodes/props/z/values",
-        f"train/{sample}.geff/nodes/props/z/zarr.json",
-        f"train/{sample}.geff/nodes/props/y/values",
-        f"train/{sample}.geff/nodes/props/y/zarr.json",
-        f"train/{sample}.geff/nodes/props/x/values",
-        f"train/{sample}.geff/nodes/props/x/zarr.json",
-        f"train/{sample}.geff/edges/ids",
+        f"train/{sample}.geff/nodes/props/t/values/zarr.json",
+        f"train/{sample}.geff/nodes/props/z/values/zarr.json",
+        f"train/{sample}.geff/nodes/props/y/values/zarr.json",
+        f"train/{sample}.geff/nodes/props/x/values/zarr.json",
         f"train/{sample}.geff/edges/ids/zarr.json",
+        f"train/{sample}.geff/nodes/zarr.json",
+        f"train/{sample}.geff/edges/zarr.json",
+        f"train/{sample}.geff/nodes/props/zarr.json",
+        f"train/{sample}.geff/nodes/props/t/zarr.json",
+        f"train/{sample}.geff/nodes/props/z/zarr.json",
+        f"train/{sample}.geff/nodes/props/y/zarr.json",
+        f"train/{sample}.geff/nodes/props/x/zarr.json",
     ]
-
-
-def download_file(session, token, file_name, out_dir, retries=3):
-    url = f"{BASE}/competitions/data/download/{COMPETITION}/{file_name}"
-    dest = out_dir / file_name
-    if dest.exists():
-        return  # already downloaded
-    dest.parent.mkdir(parents=True, exist_ok=True)
-
-    for attempt in range(retries):
-        try:
-            r = session.get(url, stream=True, timeout=60)
-            if r.status_code == 404:
-                return  # file simply doesn't exist (sparse geff structure)
-            if r.status_code == 429:
-                wait = 10 * (attempt + 1)
-                print(f"  Rate limited, waiting {wait}s...")
-                time.sleep(wait)
-                continue
-            r.raise_for_status()
-            with open(dest, "wb") as f:
-                for chunk in r.iter_content(chunk_size=256 * 1024):
-                    f.write(chunk)
-            return
-        except requests.RequestException as e:
-            if attempt == retries - 1:
-                print(f"  FAILED {file_name}: {e}")
 
 
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     token = get_token()
 
-    session = requests.Session()
-    session.headers.update({"Authorization": f"Bearer {token}"})
-
     for sample in SAMPLES:
         print(f"\n=== {sample} ===")
 
-        # zarr volume: metadata files first, then all timepoint chunks
-        meta_files = [
-            f"train/{sample}.zarr/zarr.json",
-            f"train/{sample}.zarr/0/zarr.json",
-        ]
-        print(f"Downloading zarr metadata ({len(meta_files)} files)...")
-        for f in meta_files:
-            download_file(session, token, f, OUT_DIR)
-
-        print(f"Downloading zarr chunks (T=0..{N_TIMEPOINTS-1})...")
-        for t in range(N_TIMEPOINTS):
-            fpath = f"train/{sample}.zarr/0/c/{t}/0/0/0"
-            download_file(session, token, fpath, OUT_DIR)
-            if (t + 1) % 10 == 0:
-                print(f"  {t+1}/{N_TIMEPOINTS} timepoints done")
+        # zarr volume
+        print(f"Downloading zarr (T={N_TIMEPOINTS} chunks + metadata)...")
+        ok = 0
+        for path in zarr_paths(sample):
+            if download_file(token, path, OUT_DIR):
+                ok += 1
+        print(f"  {ok}/{len(zarr_paths(sample))} files downloaded")
 
         # geff ground truth
-        gf = geff_files(sample)
-        print(f"Downloading geff ({len(gf)} files)...")
-        for f in gf:
-            download_file(session, token, f, OUT_DIR)
-        print(f"  Done.")
+        print("Downloading geff (ground truth)...")
+        paths = geff_paths(sample)
+        ok = sum(1 for p in paths if download_file(token, p, OUT_DIR))
+        print(f"  {ok}/{len(paths)} files downloaded")
 
-    print(f"\nAll downloads complete.")
-    print(f"Zarr dirs: {list(OUT_DIR.glob('*.zarr'))}")
-    print(f"Geff dirs: {list(OUT_DIR.glob('*.geff'))}")
+    print("\nVerifying zarr opens...")
+    import zarr
+    for sample in SAMPLES:
+        zarr_dir = OUT_DIR / f"{sample}.zarr"
+        try:
+            store = zarr.open(str(zarr_dir), mode="r")
+            arr = store["0"]
+            t0 = arr[0]
+            print(f"  {sample}.zarr: shape={arr.shape}, t0 range=[{t0.min()},{t0.max()}]")
+        except Exception as e:
+            print(f"  {sample}.zarr: ERROR {e}")
 
 
 if __name__ == "__main__":

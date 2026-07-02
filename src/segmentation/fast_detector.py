@@ -21,11 +21,12 @@ def normalize_volume(vol: np.ndarray) -> np.ndarray:
 
 def detect_local_maxima_2d(
     img: np.ndarray,
-    min_distance: int = 5,
+    min_distance: int = 15,
     threshold: float = 0.3,
 ) -> np.ndarray:
     """Find local maxima in a 2D image. Returns (N, 2) array of [y, x]."""
-    smoothed = gaussian_filter(img, sigma=1.5)
+    # sigma=2.5px (1µm at 0.40625µm/px) smooths sub-cell noise while preserving cell peaks
+    smoothed = gaussian_filter(img, sigma=2.5)
     neighborhood = maximum_filter(smoothed, size=min_distance * 2 + 1)
     local_max = (smoothed == neighborhood) & (smoothed >= threshold)
     coords = np.argwhere(local_max)  # (N, 2): y, x
@@ -34,9 +35,9 @@ def detect_local_maxima_2d(
 
 def detect_timepoint_fast(
     vol: np.ndarray,
-    min_distance: int = 5,
+    min_distance: int = 15,
     threshold: float = 0.3,
-    z_merge_dist: int = 3,
+    z_merge_dist: int = 5,
 ) -> np.ndarray:
     """
     Detect cells in one (Z, Y, X) volume using fast 2D local maxima per slice.
@@ -102,7 +103,7 @@ def _nms_3d(
 def detect_all_timepoints_fast(
     volume,  # zarr.Array or np.ndarray (T, Z, Y, X)
     threshold: float = 0.3,
-    min_distance: int = 5,
+    min_distance: int = 15,
 ) -> List[np.ndarray]:
     """
     Run fast detector on all timepoints.

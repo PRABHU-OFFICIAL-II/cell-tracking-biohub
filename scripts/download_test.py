@@ -1,7 +1,12 @@
 """
 Download test samples from Kaggle for submission.
-Lists all test zarr directories, then downloads each one.
-Usage: python scripts/download_test.py [--max_samples N]
+
+Kaggle doesn't serve zarr.json at the root level — we generate it locally.
+Test zarr structure mirrors train: test/SAMPLE.zarr/0/c/T/0/0/0
+
+Usage:
+  python scripts/download_test.py
+  python scripts/download_test.py --max_samples 5  # quick test with 5 samples
 """
 
 import json
@@ -21,13 +26,12 @@ def get_token():
     return json.loads(KAGGLE_JSON.read_text())["key"]
 
 
-def list_test_samples(token):
-    """List all test zarr directories via Kaggle file listing API."""
-    print("Listing test files from Kaggle API...")
+def list_all_files(token, prefix="test"):
+    """List all competition files matching prefix via paginated API."""
+    all_files = []
     page = 1
-    samples = set()
     while True:
-        url = f"{BASE}/competitions/data/list/{COMPETITION}?page={page}&pageSize=200&search=test"
+        url = f"{BASE}/competitions/data/list/{COMPETITION}?pageSize=200&page={page}"
         r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
         r.raise_for_status()
         data = r.json()
@@ -36,17 +40,23 @@ def list_test_samples(token):
             break
         for f in files:
             name = f.get("name", "")
-            # name looks like "test/44b6_xxxx.zarr/0/zarr.json" or similar
-            if name.startswith("test/") and ".zarr" in name:
-                parts = name.split("/")
-                if len(parts) >= 2:
-                    zarr_name = parts[1]  # e.g. "44b6_xxxx.zarr"
-                    if zarr_name.endswith(".zarr"):
-                        samples.add(zarr_name[:-5])  # strip .zarr
+            if name.startswith(prefix + "/"):
+                all_files.append(name)
         if len(files) < 200:
             break
         page += 1
+        time.sleep(0.1)
+    return all_files
 
+
+def extract_test_samples(file_list):
+    """Extract unique sample names from the file listing."""
+    samples = set()
+    for name in file_list:
+        # name: "test/44b6_xxxx.zarr/0/zarr.json" etc.
+        parts = name.split("/")
+        if len(parts) >= 2 and parts[1].endswith(".zarr"):
+            samples.add(parts[1][:-5])  # strip .zarr
     return sorted(samples)
 
 
@@ -77,7 +87,7 @@ def download_file(token, kaggle_path, out_dir, retries=3):
                 content = r1.content
             else:
                 gcs_url = r1.headers["Location"]
-                r2 = requests.get(gcs_url, timeout=60, stream=True)
+                r2 = requests.get(gcs_url, timeout=60)
                 r2.raise_for_status()
                 content = r2.content
 
@@ -89,35 +99,77 @@ def download_file(token, kaggle_path, out_dir, retries=3):
     return False
 
 
-def zarr_paths(sample):
+def zarr_file_paths(sample):
+    """Paths to download for one test .zarr sample."""
     paths = [f"test/{sample}.zarr/0/zarr.json"]
     for t in range(N_TIMEPOINTS):
         paths.append(f"test/{sample}.zarr/0/c/{t}/0/0/0")
     return paths
 
 
+def create_root_zarr_json(sample_dir: Path):
+    """Create the missing root zarr.json (Kaggle doesn't serve it)."""
+    root_json = sample_dir / "zarr.json"
+    if not root_json.exists():
+        root_json.write_text(json.dumps({
+            "zarr_format": 3,
+            "node_type": "group",
+            "attributes": {}
+        }, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--max_samples', type=int, default=None, help='Limit number of test samples to download')
+    parser.add_argument('--max_samples', type=int, default=None,
+                        help='Limit number of test samples (for quick test)')
+    parser.add_argument('--list_only', action='store_true',
+                        help='Only list samples, do not download')
     args = parser.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     token = get_token()
 
-    samples = list_test_samples(token)
+    print("Listing test files from Kaggle...")
+    all_files = list_all_files(token, prefix="test")
+    samples = extract_test_samples(all_files)
     print(f"Found {len(samples)} test samples")
+
+    if not samples:
+        # Fallback: scan for known naming pattern without listing
+        print("Listing returned nothing — trying direct probe for sample names from submission_file_list...")
+        # Check sample_submission.csv which usually lists expected dataset names
+        sub_files = [f for f in all_files if "sample_submission" in f.lower()]
+        print(f"  submission-related files: {sub_files}")
+        return
+
+    # Save sample list
+    list_path = OUT_DIR / "test_samples.txt"
+    list_path.write_text("\n".join(samples))
+    print(f"Sample list saved to {list_path}")
+
+    if args.list_only:
+        for s in samples:
+            print(f"  {s}")
+        return
 
     if args.max_samples:
         samples = samples[:args.max_samples]
-        print(f"Limiting to {len(samples)} samples")
+        print(f"Downloading {len(samples)} samples")
 
     for i, sample in enumerate(samples):
         print(f"\n[{i+1}/{len(samples)}] {sample}")
-        paths = zarr_paths(sample)
-        ok = sum(1 for p in paths if download_file(token, p, OUT_DIR))
-        print(f"  {ok}/{len(paths)} files downloaded")
+        paths = zarr_file_paths(sample)
+        ok = 0
+        for p in paths:
+            if download_file(token, p, OUT_DIR):
+                ok += 1
+        print(f"  {ok}/{len(paths)} files")
 
-    print("\nVerifying zarr opens...")
+        # Generate root zarr.json
+        create_root_zarr_json(OUT_DIR / f"{sample}.zarr")
+
+    # Verify a few
+    print("\nVerifying zarr volumes...")
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from src.data.zarr_reader import load_zarr_volume
@@ -125,14 +177,9 @@ def main():
         zarr_dir = OUT_DIR / f"{sample}.zarr"
         try:
             v = load_zarr_volume(str(zarr_dir))
-            print(f"  {sample}: shape={v.shape}")
+            print(f"  {sample}: shape={v.shape} OK")
         except Exception as e:
             print(f"  {sample}: ERROR {e}")
-
-    # Save the list of test samples for use by make_submission.py
-    sample_list_path = OUT_DIR / "test_samples.txt"
-    sample_list_path.write_text("\n".join(samples))
-    print(f"\nSaved sample list to {sample_list_path}")
 
 
 if __name__ == "__main__":

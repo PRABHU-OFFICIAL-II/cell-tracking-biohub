@@ -27,12 +27,13 @@ def run_segmentation(
     Run cell detection on all timepoints.
     Returns List[T] of (N_t, 3) int arrays [z, y, x].
     """
+    from tqdm import tqdm
     T = volume.shape[0]
     all_dets = []
 
     if backend == "blob":
         from .segmentation.blob_detector import detect_blobs_log, normalize_volume
-        for t in range(T):
+        for t in tqdm(range(T), desc="Blob detect"):
             frame = normalize_volume(np.array(volume[t]))
             blobs = detect_blobs_log(frame, **kwargs)
             coords = blobs[:, :3].astype(np.int32) if blobs.size > 0 else np.empty((0, 3), dtype=np.int32)
@@ -40,14 +41,14 @@ def run_segmentation(
 
     elif backend == "stardist":
         from .segmentation.stardist_detector import detect_timepoint, normalize_percentile
-        for t in range(T):
+        for t in tqdm(range(T), desc="StarDist detect"):
             frame = np.array(volume[t])
             coords = detect_timepoint(model, frame, **kwargs)
             all_dets.append(coords)
 
     elif backend == "cellpose":
         from .segmentation.cellpose_detector import detect_timepoint
-        for t in range(T):
+        for t in tqdm(range(T), desc="Cellpose detect"):
             frame = np.array(volume[t])
             coords = detect_timepoint(model, frame, **kwargs)
             all_dets.append(coords)

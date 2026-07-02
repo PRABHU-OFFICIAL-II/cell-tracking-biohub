@@ -18,8 +18,9 @@ from src.metrics.evaluate import compute_combined_score
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_dir', required=True, help='Path to train/ directory')
-    parser.add_argument('--backend', default='blob', choices=['blob', 'stardist', 'cellpose'])
+    parser.add_argument('--backend', default='fast', choices=['blob', 'fast', 'stardist', 'cellpose'])
     parser.add_argument('--max_samples', type=int, default=5, help='Max samples to evaluate')
+    parser.add_argument('--threshold', type=float, default=0.3, help='Detection threshold (fast/blob backends)')
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -46,7 +47,8 @@ def main():
 
         print(f'\n=== {sample_name} ===')
         try:
-            G_pred = run_pipeline(str(zarr_path), backend=args.backend, model=model)
+            seg_kwargs = {'threshold': args.threshold} if args.backend in ('fast', 'blob') else {}
+            G_pred = run_pipeline(str(zarr_path), backend=args.backend, model=model, seg_kwargs=seg_kwargs)
             G_gt = load_geff(str(geff_path))
             result = compute_combined_score(G_pred, G_gt)
             scores.append(result)

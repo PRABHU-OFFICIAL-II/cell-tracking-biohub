@@ -27,26 +27,16 @@ def get_token():
 
 
 def list_all_files(token, prefix="test"):
-    """List all competition files matching prefix via paginated API."""
-    all_files = []
-    page = 1
-    while True:
-        url = f"{BASE}/competitions/data/list/{COMPETITION}?pageSize=200&page={page}"
-        r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        files = data if isinstance(data, list) else data.get("files", [])
-        if not files:
-            break
-        for f in files:
-            name = f.get("name", "")
-            if name.startswith(prefix + "/"):
-                all_files.append(name)
-        if len(files) < 200:
-            break
-        page += 1
-        time.sleep(0.1)
-    return all_files
+    """List all competition files matching prefix. Kaggle API returns all at once."""
+    url = f"{BASE}/competitions/data/list/{COMPETITION}"
+    r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=60)
+    print(f"  List API status: {r.status_code}")
+    if r.status_code != 200:
+        print(f"  Response: {r.text[:300]}")
+        return []
+    data = r.json()
+    all_items = data if isinstance(data, list) else data.get("files", [])
+    return [f.get("name", "") for f in all_items if f.get("name", "").startswith(prefix + "/")]
 
 
 def extract_test_samples(file_list):

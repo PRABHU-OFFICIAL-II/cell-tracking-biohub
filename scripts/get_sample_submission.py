@@ -18,21 +18,16 @@ def get_token():
 
 
 def list_all_files(token):
-    files = []
-    page = 1
-    while True:
-        url = f"{BASE}/competitions/data/list/{COMPETITION}?pageSize=200&page={page}"
-        r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        batch = data if isinstance(data, list) else data.get("files", [])
-        if not batch:
-            break
-        files.extend(batch)
-        print(f"  page {page}: {len(batch)} files (total {len(files)})")
-        if len(batch) < 200:
-            break
-        page += 1
+    # Kaggle listing API: no pagination params, returns all files at once
+    url = f"{BASE}/competitions/data/list/{COMPETITION}"
+    r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=60)
+    print(f"  List API status: {r.status_code}")
+    if r.status_code != 200:
+        print(f"  Response: {r.text[:500]}")
+        return []
+    data = r.json()
+    files = data if isinstance(data, list) else data.get("files", [])
+    print(f"  Got {len(files)} files")
     return files
 
 

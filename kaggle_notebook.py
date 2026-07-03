@@ -1,11 +1,9 @@
 # Kaggle Notebook: Biohub Cell Tracking
-# Run this as a Kaggle notebook (kernel) to generate submission.csv
-# All code is self-contained — no external imports from this repo.
+# No internet required — reads zarr chunks directly without the zarr library.
+# Uses only: numpy, scipy, networkx, numcodecs (all pre-installed on Kaggle)
 
 import numpy as np
 import networkx as nx
-import zarr
-import json
 from pathlib import Path
 from scipy.ndimage import gaussian_filter, maximum_filter
 from scipy.optimize import linear_sum_assignment
@@ -14,6 +12,7 @@ from scipy.optimize import linear_sum_assignment
 
 VOXEL_SCALE = np.array([1.625, 0.40625, 0.40625])  # z, y, x µm/voxel
 MAX_LINK_DIST_UM = 7.0
+CHUNK_SHAPE = (64, 256, 256)  # Z, Y, X per timepoint chunk
 INPUT_DIR = Path("/kaggle/input/biohub-cell-tracking-during-development/test")
 OUTPUT_CSV = Path("/kaggle/working/submission.csv")
 
@@ -23,6 +22,35 @@ TEST_SAMPLES = [
     "6bba_05b6850b",
     "6bba_05db0fb1",
 ]
+
+# ── Zarr chunk reader (no zarr library) ──────────────────────────────────────
+
+def read_timepoint(zarr_dir: Path, t: int) -> np.ndarray:
+    """
+    Read one (Z, Y, X) uint16 volume directly from a zarr v3 chunk file.
+    Chunk codec: bytes(endian=little) + blosc(zstd, bitshuffle).
+    numcodecs.Blosc().decode() handles any blosc-compressed data.
+    """
+    chunk_path = zarr_dir / "0" / "c" / str(t) / "0" / "0" / "0"
+    data = chunk_path.read_bytes()
+
+    try:
+        from numcodecs import Blosc
+        decoded = Blosc().decode(data)
+        return np.frombuffer(decoded, dtype='<u2').reshape(CHUNK_SHAPE).copy()
+    except Exception:
+        pass
+
+    # Fallback: try zarr if somehow installed
+    try:
+        import zarr
+        store = zarr.open(str(zarr_dir), mode="r")
+        return np.array(store["0"][t])
+    except Exception:
+        pass
+
+    raise RuntimeError(f"Cannot read chunk {chunk_path} — numcodecs and zarr both failed")
+
 
 # ── Segmentation ──────────────────────────────────────────────────────────────
 
@@ -78,18 +106,18 @@ def detect_timepoint(vol, min_distance=10, threshold=0.5, z_merge_dist=5):
 
 # ── Tracking ──────────────────────────────────────────────────────────────────
 
-def physical_distance(a, b):
+def physical_dist(a, b):
     diff = (a - b).astype(np.float64) * VOXEL_SCALE
     return np.sqrt(np.dot(diff, diff))
 
 
-def solve_lap(pts_src, pts_tgt, ids_src, ids_tgt, max_dist=MAX_LINK_DIST_UM):
+def solve_lap(pts_src, pts_tgt, ids_src, ids_tgt, max_dist):
     N, M = len(pts_src), len(pts_tgt)
     BIG = 1e9
     cost = np.full((N, M), BIG)
     for i, a in enumerate(pts_src):
         for j, b in enumerate(pts_tgt):
-            d = physical_distance(a, b)
+            d = physical_dist(a, b)
             if d <= max_dist:
                 cost[i, j] = d ** 2
 
@@ -103,11 +131,11 @@ def solve_lap(pts_src, pts_tgt, ids_src, ids_tgt, max_dist=MAX_LINK_DIST_UM):
     aug[N:, M:] = sub.T
 
     row_ind, col_ind = linear_sum_assignment(aug)
-    edges = []
-    for r, c in zip(row_ind, col_ind):
-        if r < N and c < M and aug[r, c] < 1e8:
-            edges.append((int(ids_src[r]), int(ids_tgt[c])))
-    return edges
+    return [
+        (int(ids_src[r]), int(ids_tgt[c]))
+        for r, c in zip(row_ind, col_ind)
+        if r < N and c < M and aug[r, c] < 1e8
+    ]
 
 
 def track(detections, max_dist=MAX_LINK_DIST_UM, max_gap=2):
@@ -125,44 +153,34 @@ def track(detections, max_dist=MAX_LINK_DIST_UM, max_gap=2):
 
     T = len(detections)
 
-    def get_pts(ids):
+    def pts(ids):
         return np.array([[G.nodes[n]["z"], G.nodes[n]["y"], G.nodes[n]["x"]] for n in ids])
 
     for t in range(T - 1):
         s, tgt = frame_nodes[t], frame_nodes[t + 1]
         if len(s) and len(tgt):
-            G.add_edges_from(solve_lap(get_pts(s), get_pts(tgt), s, tgt))
+            G.add_edges_from(solve_lap(pts(s), pts(tgt), s, tgt, max_dist))
 
-    if max_gap > 1:
-        for gap in range(2, max_gap + 1):
-            for t in range(T - gap):
-                s = [n for n in frame_nodes[t] if G.out_degree(n) == 0]
-                tgt = [n for n in frame_nodes[t + gap] if G.in_degree(n) == 0]
-                if s and tgt:
-                    G.add_edges_from(solve_lap(
-                        get_pts(s), get_pts(tgt),
-                        np.array(s), np.array(tgt),
-                        max_dist * gap,
-                    ))
+    for gap in range(2, max_gap + 1):
+        for t in range(T - gap):
+            s = [n for n in frame_nodes[t] if G.out_degree(n) == 0]
+            tgt = [n for n in frame_nodes[t + gap] if G.in_degree(n) == 0]
+            if s and tgt:
+                G.add_edges_from(solve_lap(
+                    pts(s), pts(tgt), np.array(s), np.array(tgt), max_dist * gap))
 
     return G
 
 
-# ── Division post-processing ──────────────────────────────────────────────────
-
 def prune_invalid_divisions(G):
-    """Remove extra outgoing edges from nodes with >2 successors, keeping 2 closest."""
     to_remove = []
     for n in list(G.nodes):
         succs = list(G.successors(n))
         if len(succs) > 2:
             nc = np.array([G.nodes[n]["z"], G.nodes[n]["y"], G.nodes[n]["x"]], dtype=np.float64)
-            dists = []
-            for s in succs:
-                sc = np.array([G.nodes[s]["z"], G.nodes[s]["y"], G.nodes[s]["x"]], dtype=np.float64)
-                dists.append(physical_distance(nc, sc))
-            order = np.argsort(dists)
-            for idx in order[2:]:
+            dists = [physical_dist(nc, np.array([G.nodes[s]["z"], G.nodes[s]["y"], G.nodes[s]["x"]], dtype=np.float64))
+                     for s in succs]
+            for idx in np.argsort(dists)[2:]:
                 to_remove.append((n, succs[idx]))
     G.remove_edges_from(to_remove)
     return G
@@ -187,31 +205,22 @@ def build_submission(graphs):
         writer = csv.writer(f)
         writer.writerow(["id", "dataset", "row_type", "node_id", "t", "z", "y", "x", "source_id", "target_id"])
         writer.writerows(rows)
-
     print(f"Saved {len(rows)} rows to {OUTPUT_CSV}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def load_zarr_volume(zarr_path):
-    store = zarr.open(str(zarr_path), mode="r")
-    return store["0"]
-
-
 graphs = {}
 for sample in TEST_SAMPLES:
-    zarr_path = INPUT_DIR / f"{sample}.zarr"
+    zarr_dir = INPUT_DIR / f"{sample}.zarr"
     print(f"\n=== {sample} ===")
 
-    volume = load_zarr_volume(zarr_path)
-    print(f"shape={volume.shape}")
-
     detections = []
-    for t in range(volume.shape[0]):
-        frame = np.array(volume[t])
-        pts = detect_timepoint(frame, min_distance=10, threshold=0.5)
+    for t in range(100):
+        vol = read_timepoint(zarr_dir, t)
+        pts = detect_timepoint(vol, min_distance=10, threshold=0.5)
         detections.append(pts)
-        if (t + 1) % 20 == 0:
+        if (t + 1) % 25 == 0:
             print(f"  t={t+1}/100 — {sum(len(d) for d in detections)} cells so far")
 
     total = sum(len(d) for d in detections)

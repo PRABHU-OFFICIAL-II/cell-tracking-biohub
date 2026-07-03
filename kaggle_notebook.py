@@ -279,7 +279,6 @@ for sample in TEST_SAMPLES:
         print(f"Segmented: {total} cells across {T} frames")
 
         G = track(detections)
-        G = add_divisions(G, max_div_dist=12.0)
         G = prune_invalid_divisions(G)
         n_divs = sum(1 for n in G.nodes if G.out_degree(n) >= 2)
         print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, {n_divs} divisions")

@@ -159,7 +159,9 @@ def compute_division_jaccard(
     FP = sum(1 for n in pred_divisions if n not in matched_pred)
 
     denom = TP + FP + FN
-    jaccard = TP / denom if denom > 0 else 0.0
+    # Vacuous truth: no GT divisions and no predicted divisions → score is 1.0
+    # (matches Kaggle server convention)
+    jaccard = TP / denom if denom > 0 else 1.0
     return jaccard, TP, FP, FN
 
 

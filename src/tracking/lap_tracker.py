@@ -12,7 +12,7 @@ from scipy.optimize import linear_sum_assignment
 from typing import List, Optional
 
 VOXEL_SCALE = np.array([1.625, 0.40625, 0.40625])  # z, y, x µm/voxel
-MAX_LINK_DIST_UM = 7.0
+MAX_LINK_DIST_UM = 15.0
 MAX_GAP_FRAMES = 2  # allow cells to disappear for up to 2 frames
 
 

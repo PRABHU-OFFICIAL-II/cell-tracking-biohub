@@ -13,7 +13,9 @@ from scipy.optimize import linear_sum_assignment
 # ── Constants ────────────────────────────────────────────────────────────────
 
 VOXEL_SCALE = np.array([1.625, 0.40625, 0.40625])  # z, y, x µm/voxel
-MAX_LINK_DIST_UM = 7.0
+# Tracking link distance: cells can move ~15µm between frames in zebrafish embryo.
+# The 7µm limit is only the evaluation *matching* threshold, not a movement constraint.
+MAX_LINK_DIST_UM = 15.0
 OUTPUT_CSV = Path("/kaggle/working/submission.csv")
 
 # Auto-discover input directory — try known paths in order
@@ -109,15 +111,22 @@ def physical_distance(a, b):
     return np.sqrt(np.dot(diff, diff))
 
 
+def build_cost_matrix(pts_src, pts_tgt, max_dist):
+    """Vectorized cost matrix using broadcasting. Much faster than nested loop."""
+    # Scale to physical coordinates
+    a = pts_src.astype(np.float64) * VOXEL_SCALE  # (N, 3)
+    b = pts_tgt.astype(np.float64) * VOXEL_SCALE  # (M, 3)
+    # (N, M) distance matrix
+    diff = a[:, np.newaxis, :] - b[np.newaxis, :, :]  # (N, M, 3)
+    dist2 = np.sum(diff ** 2, axis=2)                  # (N, M)
+    BIG = 1e9
+    cost = np.where(dist2 <= max_dist ** 2, dist2, BIG)
+    return cost, BIG
+
+
 def solve_lap(pts_src, pts_tgt, ids_src, ids_tgt, max_dist=MAX_LINK_DIST_UM):
     N, M = len(pts_src), len(pts_tgt)
-    BIG = 1e9
-    cost = np.full((N, M), BIG)
-    for i, a in enumerate(pts_src):
-        for j, b in enumerate(pts_tgt):
-            d = physical_distance(a, b)
-            if d <= max_dist:
-                cost[i, j] = d ** 2
+    cost, BIG = build_cost_matrix(pts_src, pts_tgt, max_dist)
 
     aug = np.full((N + M, N + M), BIG)
     aug[:N, :M] = cost

@@ -1,11 +1,11 @@
 # Kaggle Notebook: Biohub Cell Tracking
-# No pip install needed — zarr and networkx are pre-installed in Kaggle environment.
-# Internet OFF is fine. Run all → Save & Run All → Submit to Competition.
+# Robust version: auto-discovers input path and sample names.
+# Add zarr to notebook dependencies. Internet OFF is fine.
 
 import numpy as np
 import networkx as nx
 import zarr
-import json
+import os
 from pathlib import Path
 from scipy.ndimage import gaussian_filter, maximum_filter
 from scipy.optimize import linear_sum_assignment
@@ -14,15 +14,41 @@ from scipy.optimize import linear_sum_assignment
 
 VOXEL_SCALE = np.array([1.625, 0.40625, 0.40625])  # z, y, x µm/voxel
 MAX_LINK_DIST_UM = 7.0
-INPUT_DIR = Path("/kaggle/input/competitions/biohub-cell-tracking-during-development/test")
 OUTPUT_CSV = Path("/kaggle/working/submission.csv")
 
-TEST_SAMPLES = [
-    "44b6_0113de3b",
-    "44b6_0b24845f",
-    "6bba_05b6850b",
-    "6bba_05db0fb1",
-]
+# Auto-discover input directory — try known paths in order
+def find_input_dir():
+    candidates = [
+        "/kaggle/input/biohub-cell-tracking-during-development/test",
+        "/kaggle/input/competitions/biohub-cell-tracking-during-development/test",
+        "/kaggle/input/biohub-cell-tracking-during-development",
+        "/kaggle/input/competitions/biohub-cell-tracking-during-development",
+    ]
+    for p in candidates:
+        path = Path(p)
+        if path.exists():
+            # Check if it directly contains .zarr dirs
+            zarrs = list(path.glob("*.zarr"))
+            if zarrs:
+                print(f"Found input dir: {path} ({len(zarrs)} zarr dirs)")
+                return path
+            # Or a test/ subdirectory
+            test_sub = path / "test"
+            if test_sub.exists() and list(test_sub.glob("*.zarr")):
+                print(f"Found input dir: {test_sub}")
+                return test_sub
+    # Last resort: walk /kaggle/input looking for any .zarr
+    print("Scanning /kaggle/input for .zarr directories...")
+    for root, dirs, files in os.walk("/kaggle/input"):
+        zarrs = [d for d in dirs if d.endswith(".zarr")]
+        if zarrs:
+            print(f"  Found zarr dirs in {root}: {zarrs[:3]}")
+            return Path(root)
+    raise RuntimeError("Cannot find test input directory")
+
+INPUT_DIR = find_input_dir()
+TEST_SAMPLES = sorted(p.stem for p in INPUT_DIR.glob("*.zarr"))
+print(f"Test samples ({len(TEST_SAMPLES)}): {TEST_SAMPLES}")
 
 # ── Segmentation ──────────────────────────────────────────────────────────────
 
@@ -35,7 +61,7 @@ def detect_local_maxima_2d(img, min_distance=10, threshold=0.5):
     smoothed = gaussian_filter(img, sigma=2.5)
     neighborhood = maximum_filter(smoothed, size=min_distance * 2 + 1)
     local_max = (smoothed == neighborhood) & (smoothed >= threshold)
-    return np.argwhere(local_max)  # (N, 2): y, x
+    return np.argwhere(local_max)
 
 
 def nms_3d(pts, vol, xy_dist, z_dist):
@@ -103,11 +129,11 @@ def solve_lap(pts_src, pts_tgt, ids_src, ids_tgt, max_dist=MAX_LINK_DIST_UM):
     aug[N:, M:] = sub.T
 
     row_ind, col_ind = linear_sum_assignment(aug)
-    edges = []
-    for r, c in zip(row_ind, col_ind):
-        if r < N and c < M and aug[r, c] < 1e8:
-            edges.append((int(ids_src[r]), int(ids_tgt[c])))
-    return edges
+    return [
+        (int(ids_src[r]), int(ids_tgt[c]))
+        for r, c in zip(row_ind, col_ind)
+        if r < N and c < M and aug[r, c] < 1e8
+    ]
 
 
 def track(detections, max_dist=MAX_LINK_DIST_UM, max_gap=2):
@@ -154,12 +180,9 @@ def prune_invalid_divisions(G):
         succs = list(G.successors(n))
         if len(succs) > 2:
             nc = np.array([G.nodes[n]["z"], G.nodes[n]["y"], G.nodes[n]["x"]], dtype=np.float64)
-            dists = []
-            for s in succs:
-                sc = np.array([G.nodes[s]["z"], G.nodes[s]["y"], G.nodes[s]["x"]], dtype=np.float64)
-                dists.append(physical_distance(nc, sc))
-            order = np.argsort(dists)
-            for idx in order[2:]:
+            dists = [physical_distance(nc, np.array([G.nodes[s]["z"], G.nodes[s]["y"], G.nodes[s]["x"]], dtype=np.float64))
+                     for s in succs]
+            for idx in np.argsort(dists)[2:]:
                 to_remove.append((n, succs[idx]))
     G.remove_edges_from(to_remove)
     return G
@@ -189,35 +212,40 @@ def build_submission(graphs):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def load_zarr_volume(zarr_path):
-    store = zarr.open(str(zarr_path), mode="r")
-    return store["0"]
-
-
 graphs = {}
 for sample in TEST_SAMPLES:
     zarr_path = INPUT_DIR / f"{sample}.zarr"
     print(f"\n=== {sample} ===")
+    try:
+        store = zarr.open(str(zarr_path), mode="r")
+        volume = store["0"]
+        T = volume.shape[0]
+        print(f"shape={volume.shape}")
 
-    volume = load_zarr_volume(zarr_path)
-    print(f"shape={volume.shape}")
+        detections = []
+        for t in range(T):
+            frame = np.array(volume[t])
+            pts = detect_timepoint(frame, min_distance=10, threshold=0.5)
+            detections.append(pts)
+            if (t + 1) % 20 == 0:
+                print(f"  t={t+1}/{T} — {sum(len(d) for d in detections)} cells so far")
 
-    detections = []
-    for t in range(volume.shape[0]):
-        frame = np.array(volume[t])
-        pts = detect_timepoint(frame, min_distance=10, threshold=0.5)
-        detections.append(pts)
-        if (t + 1) % 20 == 0:
-            print(f"  t={t+1}/100 — {sum(len(d) for d in detections)} cells so far")
+        total = sum(len(d) for d in detections)
+        print(f"Segmented: {total} cells across {T} frames")
 
-    total = sum(len(d) for d in detections)
-    print(f"Segmented: {total} cells across 100 frames")
+        G = track(detections)
+        G = prune_invalid_divisions(G)
+        n_divs = sum(1 for n in G.nodes if G.out_degree(n) >= 2)
+        print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, {n_divs} divisions")
+        graphs[sample] = G
 
-    G = track(detections)
-    G = prune_invalid_divisions(G)
-    n_divs = sum(1 for n in G.nodes if G.out_degree(n) >= 2)
-    print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, {n_divs} divisions")
-    graphs[sample] = G
+    except Exception as e:
+        import traceback
+        print(f"ERROR on {sample}: {e}")
+        traceback.print_exc()
+        # Add empty graph so submission still includes this dataset
+        G = nx.DiGraph()
+        graphs[sample] = G
 
 build_submission(graphs)
 print("\nDone.")

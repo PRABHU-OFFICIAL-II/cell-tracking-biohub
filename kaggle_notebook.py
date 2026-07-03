@@ -188,6 +188,51 @@ def prune_invalid_divisions(G):
     return G
 
 
+def add_divisions(G, max_div_dist=12.0):
+    """
+    Find divisions: a node at t with exactly 1 outgoing edge (already linked to
+    one daughter) may have a second daughter that is an orphan at t+1.
+    Also checks nodes with 0 outgoing edges for 2 nearby orphans.
+    """
+    by_t = {}
+    for n, data in G.nodes(data=True):
+        by_t.setdefault(data["t"], []).append(n)
+
+    T_max = max(by_t.keys(), default=0)
+    G = G.copy()
+
+    for t in range(T_max):
+        next_nodes = by_t.get(t + 1, [])
+        # Orphans at t+1: no incoming edge (unlinked cells)
+        orphans = [n for n in next_nodes if G.in_degree(n) == 0]
+        if not orphans:
+            continue
+
+        orphan_coords = np.array([[G.nodes[n]["z"], G.nodes[n]["y"], G.nodes[n]["x"]] for n in orphans],
+                                  dtype=np.float64)
+
+        for mother in by_t.get(t, []):
+            mc = np.array([G.nodes[mother]["z"], G.nodes[mother]["y"], G.nodes[mother]["x"]], dtype=np.float64)
+            n_out = G.out_degree(mother)
+
+            if n_out == 1:
+                # Already has one daughter — look for a second nearby orphan
+                dists = np.linalg.norm((orphan_coords - mc) * VOXEL_SCALE, axis=1)
+                close = [(dists[i], orphans[i]) for i in range(len(orphans)) if dists[i] <= max_div_dist]
+                if len(close) == 1:
+                    G.add_edge(mother, close[0][1])
+
+            elif n_out == 0:
+                # No daughters yet — look for exactly 2 nearby orphans
+                dists = np.linalg.norm((orphan_coords - mc) * VOXEL_SCALE, axis=1)
+                close = sorted([(dists[i], orphans[i]) for i in range(len(orphans)) if dists[i] <= max_div_dist])
+                if len(close) == 2:
+                    G.add_edge(mother, close[0][1])
+                    G.add_edge(mother, close[1][1])
+
+    return G
+
+
 # ── Submission builder ────────────────────────────────────────────────────────
 
 def build_submission(graphs):
@@ -234,6 +279,7 @@ for sample in TEST_SAMPLES:
         print(f"Segmented: {total} cells across {T} frames")
 
         G = track(detections)
+        G = add_divisions(G, max_div_dist=12.0)
         G = prune_invalid_divisions(G)
         n_divs = sum(1 for n in G.nodes if G.out_degree(n) >= 2)
         print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, {n_divs} divisions")

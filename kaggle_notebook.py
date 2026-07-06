@@ -15,7 +15,7 @@ from scipy.optimize import linear_sum_assignment
 VOXEL_SCALE = np.array([1.625, 0.40625, 0.40625])  # z, y, x µm/voxel
 # Tracking link distance: cells can move ~15µm between frames in zebrafish embryo.
 # The 7µm limit is only the evaluation *matching* threshold, not a movement constraint.
-MAX_LINK_DIST_UM = 15.0
+MAX_LINK_DIST_UM = 7.0
 OUTPUT_CSV = Path("/kaggle/working/submission.csv")
 
 # Auto-discover input directory — try known paths in order

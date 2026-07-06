@@ -18,7 +18,7 @@ from src.metrics.evaluate import compute_combined_score
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_dir', required=True, help='Path to train/ directory')
-    parser.add_argument('--backend', default='fast', choices=['blob', 'fast', 'stardist', 'cellpose'])
+    parser.add_argument('--backend', default='fast', choices=['blob', 'fast', 'centroid', 'stardist', 'cellpose'])
     parser.add_argument('--max_samples', type=int, default=5, help='Max samples to evaluate')
     parser.add_argument('--threshold', type=float, default=0.3, help='Detection threshold (fast/blob backends)')
     args = parser.parse_args()

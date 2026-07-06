@@ -14,7 +14,7 @@ from .tracking.division_detector import prune_invalid_divisions, add_division_ed
 from .submission.build_csv import graph_to_submission_rows
 
 
-SegmentationBackend = Literal["blob", "fast", "stardist", "cellpose"]
+SegmentationBackend = Literal["blob", "fast", "centroid", "stardist", "cellpose"]
 
 
 def run_segmentation(
@@ -31,7 +31,14 @@ def run_segmentation(
     T = volume.shape[0]
     all_dets = []
 
-    if backend == "fast":
+    if backend == "centroid":
+        from .segmentation.blob_centroid_detector import detect_timepoint_blob_centroid
+        for t in tqdm(range(T), desc="Centroid detect"):
+            frame = np.array(volume[t])
+            coords = detect_timepoint_blob_centroid(frame, **kwargs)
+            all_dets.append(coords)
+
+    elif backend == "fast":
         from .segmentation.fast_detector import detect_timepoint_fast
         for t in tqdm(range(T), desc="Fast detect"):
             frame = np.array(volume[t])

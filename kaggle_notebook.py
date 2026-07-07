@@ -279,7 +279,7 @@ for sample in TEST_SAMPLES:
         detections = []
         for t in range(T):
             frame = np.array(volume[t])
-            pts = detect_timepoint(frame, min_distance=10, threshold=0.7)
+            pts = detect_timepoint(frame, min_distance=20, threshold=0.6)
             detections.append(pts)
             if (t + 1) % 20 == 0:
                 print(f"  t={t+1}/{T} — {sum(len(d) for d in detections)} cells so far")
